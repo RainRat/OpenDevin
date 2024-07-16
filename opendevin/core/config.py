@@ -21,8 +21,7 @@ load_dotenv()
 
 @dataclass
 class LLMConfig:
-    """
-    Configuration for the LLM model.
+    """Configuration for the LLM model.
 
     Attributes:
         model: The model to use.
@@ -75,9 +74,7 @@ class LLMConfig:
     ollama_base_url: str | None = None
 
     def defaults_to_dict(self) -> dict:
-        """
-        Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional.
-        """
+        """Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional."""
         result = {}
         for f in fields(self):
             result[f.name] = get_field_info(f)
@@ -102,8 +99,7 @@ class LLMConfig:
 
 @dataclass
 class AgentConfig:
-    """
-    Configuration for the agent.
+    """Configuration for the agent.
 
     Attributes:
         memory_enabled: Whether long-term memory (embeddings) is enabled.
@@ -116,9 +112,7 @@ class AgentConfig:
     llm_config: str | None = None
 
     def defaults_to_dict(self) -> dict:
-        """
-        Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional.
-        """
+        """Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional."""
         result = {}
         for f in fields(self):
             result[f.name] = get_field_info(f)
@@ -127,8 +121,7 @@ class AgentConfig:
 
 @dataclass
 class SandboxConfig(metaclass=Singleton):
-    """
-    Configuration for the sandbox.
+    """Configuration for the sandbox.
 
     Attributes:
         box_type: The type of sandbox to use. Options are: ssh, e2b, local.
@@ -146,11 +139,13 @@ class SandboxConfig(metaclass=Singleton):
     )
     user_id: int = os.getuid() if hasattr(os, 'getuid') else 1000
     timeout: int = 120
+    enable_auto_lint: bool = (
+        False  # once enabled, OpenDevin would lint files after editing
+    )
+    initialize_plugins: bool = True
 
     def defaults_to_dict(self) -> dict:
-        """
-        Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional.
-        """
+        """Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional."""
         dict = {}
         for f in fields(self):
             dict[f.name] = get_field_info(f)
@@ -176,8 +171,7 @@ class UndefinedString(str, Enum):
 
 @dataclass
 class AppConfig(metaclass=Singleton):
-    """
-    Configuration for the app.
+    """Configuration for the app.
 
     Attributes:
         llms: A dictionary of name -> LLM configuration. Default config is under 'llm' key.
@@ -199,9 +193,7 @@ class AppConfig(metaclass=Singleton):
         use_host_network: Whether to use the host network.
         ssh_hostname: The SSH hostname.
         disable_color: Whether to disable color. For terminals that don't support color.
-        initialize_plugins: Whether to initialize plugins.
         debug: Whether to enable debugging.
-        enable_auto_lint: Whether to enable auto linting. This is False by default, for regular runs of the app. For evaluation, please set this to True.
         enable_cli_session: Whether to enable saving and restoring the session when run from CLI.
         file_uploads_max_file_size_mb: Maximum file size for uploads in megabytes. 0 means no limit.
         file_uploads_restrict_file_types: Whether to restrict file types for file uploads. Defaults to False.
@@ -230,15 +222,11 @@ class AppConfig(metaclass=Singleton):
     use_host_network: bool = False
     ssh_hostname: str = 'localhost'
     disable_color: bool = False
-    initialize_plugins: bool = True
     persist_sandbox: bool = False
     ssh_port: int = 63710
     ssh_password: str | None = None
     jwt_secret: str = uuid.uuid4().hex
     debug: bool = False
-    enable_auto_lint: bool = (
-        False  # once enabled, OpenDevin would lint files after editing
-    )
     enable_cli_session: bool = False
     file_uploads_max_file_size_mb: int = 0
     file_uploads_restrict_file_types: bool = False
@@ -247,9 +235,7 @@ class AppConfig(metaclass=Singleton):
     defaults_dict: ClassVar[dict] = {}
 
     def get_llm_config(self, name='llm') -> LLMConfig:
-        """
-        llm is the name for default config (for backward compatibility prior to 0.8)
-        """
+        """Llm is the name for default config (for backward compatibility prior to 0.8)"""
         if name in self.llms:
             return self.llms[name]
         if name is not None and name != 'llm':
@@ -262,9 +248,7 @@ class AppConfig(metaclass=Singleton):
         self.llms[name] = value
 
     def get_agent_config(self, name='agent') -> AgentConfig:
-        """
-        agent is the name for default config (for backward compability prior to 0.8)
-        """
+        """Agent is the name for default config (for backward compability prior to 0.8)"""
         if name in self.agents:
             return self.agents[name]
         if 'agent' not in self.agents:
@@ -280,15 +264,11 @@ class AppConfig(metaclass=Singleton):
         return self.get_llm_config(llm_config_name)
 
     def __post_init__(self):
-        """
-        Post-initialization hook, called when the instance is created with only default values.
-        """
+        """Post-initialization hook, called when the instance is created with only default values."""
         AppConfig.defaults_dict = self.defaults_to_dict()
 
     def defaults_to_dict(self) -> dict:
-        """
-        Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional.
-        """
+        """Serialize fields to a dict for the frontend, including type hints, defaults, and whether it's optional."""
         result = {}
         for f in fields(self):
             field_value = getattr(self, f.name)
@@ -323,8 +303,7 @@ class AppConfig(metaclass=Singleton):
 
 
 def get_field_info(f):
-    """
-    Extract information about a dataclass field: type, optional, and default.
+    """Extract information about a dataclass field: type, optional, and default.
 
     Args:
         f: The field to extract information from.
@@ -423,7 +402,6 @@ def load_from_toml(cfg: AppConfig, toml_file: str = 'config.toml'):
         cfg: The AppConfig object to update attributes of.
         toml_file: The path to the toml file. Defaults to 'config.toml'.
     """
-
     # try to read the config.toml file into the config object
     try:
         with open(toml_file, 'r', encoding='utf-8') as toml_contents:
@@ -514,10 +492,7 @@ def load_from_toml(cfg: AppConfig, toml_file: str = 'config.toml'):
 
 
 def finalize_config(cfg: AppConfig):
-    """
-    More tweaks to the config after it's been loaded.
-    """
-
+    """More tweaks to the config after it's been loaded."""
     # Set workspace_mount_path if not set by the user
     if cfg.workspace_mount_path is UndefinedString.UNDEFINED:
         cfg.workspace_mount_path = os.path.abspath(cfg.workspace_base)
@@ -558,8 +533,7 @@ finalize_config(config)
 def get_llm_config_arg(
     llm_config_arg: str, toml_file: str = 'config.toml'
 ) -> LLMConfig | None:
-    """
-    Get a group of llm settings from the config file.
+    """Get a group of llm settings from the config file.
 
     A group in config.toml can look like this:
 
@@ -583,7 +557,6 @@ def get_llm_config_arg(
     Returns:
         LLMConfig: The LLMConfig object with the settings from the config file.
     """
-
     # keep only the name, just in case
     llm_config_arg = llm_config_arg.strip('[]')
 
@@ -613,9 +586,7 @@ def get_llm_config_arg(
 
 # Command line arguments
 def get_parser() -> argparse.ArgumentParser:
-    """
-    Get the parser for the command line arguments.
-    """
+    """Get the parser for the command line arguments."""
     parser = argparse.ArgumentParser(description='Run an agent with a specific task')
     parser.add_argument(
         '-d',
@@ -683,15 +654,13 @@ def get_parser() -> argparse.ArgumentParser:
         '--llm-config',
         default=None,
         type=str,
-        help='The group of llm settings, e.g. "llama3" for [llm.llama3] section in the toml file. Overrides model if both are provided.',
+        help='Replace default LLM ([llm] section in config.toml) config with the specified LLM config, e.g. "llama3" for [llm.llama3] section in config.toml',
     )
     return parser
 
 
 def parse_arguments() -> argparse.Namespace:
-    """
-    Parse the command line arguments.
-    """
+    """Parse the command line arguments."""
     parser = get_parser()
     parsed_args, _ = parser.parse_known_args()
     if parsed_args.directory:
