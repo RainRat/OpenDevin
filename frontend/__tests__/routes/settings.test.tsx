@@ -10,6 +10,7 @@ import * as AdvancedSettingsUtlls from "#/utils/has-advanced-settings-set";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { PostApiSettings } from "#/types/settings";
 import * as ConsentHandlers from "#/utils/handle-capture-consent";
+import AccountSettings from "#/routes/account-settings";
 
 const toggleAdvancedSettings = async (user: UserEvent) => {
   const advancedSwitch = await screen.findByTestId("advanced-settings-switch");
@@ -36,6 +37,7 @@ describe("Settings Screen", () => {
     {
       Component: SettingsScreen,
       path: "/settings",
+      children: [{ Component: AccountSettings, path: "/settings" }],
     },
   ]);
 
@@ -696,7 +698,7 @@ describe("Settings Screen", () => {
 
       expect(saveSettingsSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          llm_api_key: undefined,
+          llm_api_key: "", // empty because it's not set previously
           github_token: undefined,
           language: "no",
         }),
@@ -735,7 +737,7 @@ describe("Settings Screen", () => {
       expect(saveSettingsSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           github_token: undefined,
-          llm_api_key: undefined,
+          llm_api_key: "", // empty because it's not set previously
           llm_model: "openai/gpt-4o",
         }),
       );
@@ -898,6 +900,56 @@ describe("Settings Screen", () => {
         expect.objectContaining({
           enable_default_condenser: true,
         }),
+      );
+    });
+
+    it("should send an empty LLM API Key if the user submits an empty string", async () => {
+      const user = userEvent.setup();
+      renderSettingsScreen();
+
+      const input = await screen.findByTestId("llm-api-key-input");
+      expect(input).toHaveValue("");
+
+      const saveButton = screen.getByText("Save Changes");
+      await user.click(saveButton);
+
+      expect(saveSettingsSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ llm_api_key: "" }),
+      );
+    });
+
+    it("should not send an empty LLM API Key if the user submits an empty string but already has it set", async () => {
+      const user = userEvent.setup();
+      getSettingsSpy.mockResolvedValue({
+        ...MOCK_DEFAULT_USER_SETTINGS,
+        llm_api_key: "**********",
+      });
+
+      renderSettingsScreen();
+
+      const input = await screen.findByTestId("llm-api-key-input");
+      expect(input).toHaveValue("");
+
+      const saveButton = screen.getByText("Save Changes");
+      await user.click(saveButton);
+
+      expect(saveSettingsSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ llm_api_key: undefined }),
+      );
+    });
+
+    it("should submit the LLM API Key if it is the first time the user sets it", async () => {
+      const user = userEvent.setup();
+      renderSettingsScreen();
+
+      const input = await screen.findByTestId("llm-api-key-input");
+      await user.type(input, "new-api-key");
+
+      const saveButton = screen.getByText("Save Changes");
+      await user.click(saveButton);
+
+      expect(saveSettingsSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ llm_api_key: "new-api-key" }),
       );
     });
   });
