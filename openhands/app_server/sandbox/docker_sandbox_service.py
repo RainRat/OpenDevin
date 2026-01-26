@@ -3,7 +3,7 @@ import logging
 import os
 import socket
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import AsyncGenerator
 
 import base62
@@ -27,6 +27,9 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
+    ALLOW_CORS_ORIGINS_VARIABLE,
+    SESSION_API_KEY_VARIABLE,
+    WEBHOOK_CALLBACK_VARIABLE,
     SandboxService,
     SandboxServiceInjector,
 )
@@ -37,8 +40,7 @@ from openhands.app_server.utils.docker_utils import (
 )
 
 _logger = logging.getLogger(__name__)
-SESSION_API_KEY_VARIABLE = 'OH_SESSION_API_KEYS_0'
-WEBHOOK_CALLBACK_VARIABLE = 'OH_WEBHOOKS_0_BASE_URL'
+STARTUP_GRACE_SECONDS = 15
 
 
 class VolumeMount(BaseModel):
@@ -78,7 +80,10 @@ class DockerSandboxService(SandboxService):
     health_check_path: str | None
     httpx_client: httpx.AsyncClient
     max_num_sandboxes: int
+    web_url: str | None = None
+    extra_hosts: dict[str, str] = field(default_factory=dict)
     docker_client: docker.DockerClient = field(default_factory=get_docker_client)
+    startup_grace_seconds: int = STARTUP_GRACE_SECONDS
 
     def _find_unused_port(self) -> int:
         """Find an unused port on the host machine."""
@@ -199,8 +204,16 @@ class DockerSandboxService(SandboxService):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                _logger.info(f'Sandbox server not running: {app_server_url} : {exc}')
-                sandbox_info.status = SandboxStatus.ERROR
+                # If the server is
+                if sandbox_info.created_at < utc_now() - timedelta(
+                    seconds=self.startup_grace_seconds
+                ):
+                    _logger.info(
+                        f'Sandbox server not running: {app_server_url} : {exc}'
+                    )
+                    sandbox_info.status = SandboxStatus.ERROR
+                else:
+                    sandbox_info.status = SandboxStatus.STARTING
                 sandbox_info.exposed_urls = None
                 sandbox_info.session_api_key = None
         return sandbox_info
@@ -283,7 +296,9 @@ class DockerSandboxService(SandboxService):
         except (NotFound, APIError):
             return None
 
-    async def start_sandbox(self, sandbox_spec_id: str | None = None) -> SandboxInfo:
+    async def start_sandbox(
+        self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
+    ) -> SandboxInfo:
         """Start a new sandbox."""
         # Enforce sandbox limits by cleaning up old sandboxes
         await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
@@ -298,10 +313,12 @@ class DockerSandboxService(SandboxService):
                 raise ValueError('Sandbox Spec not found')
             sandbox_spec = sandbox_spec_maybe
 
-        # Generate container ID and session api key
-        container_name = (
-            f'{self.container_name_prefix}{base62.encodebytes(os.urandom(16))}'
-        )
+        # Generate a sandbox id if none was provided
+        if sandbox_id is None:
+            sandbox_id = base62.encodebytes(os.urandom(16))
+
+        # Generate container name and session api key
+        container_name = f'{self.container_name_prefix}{sandbox_id}'
         session_api_key = base62.encodebytes(os.urandom(32))
 
         # Prepare environment variables
@@ -310,6 +327,12 @@ class DockerSandboxService(SandboxService):
         env_vars[WEBHOOK_CALLBACK_VARIABLE] = (
             f'http://host.docker.internal:{self.host_port}/api/v1/webhooks'
         )
+
+        # Set CORS origins for remote browser access when web_url is configured.
+        # This allows the agent-server container to accept requests from the
+        # frontend when running OpenHands on a remote machine.
+        if self.web_url:
+            env_vars[ALLOW_CORS_ORIGINS_VARIABLE] = self.web_url
 
         # Prepare port mappings and add port environment variables
         port_mappings = {}
@@ -349,6 +372,9 @@ class DockerSandboxService(SandboxService):
                 # Use Docker's tini init process to ensure proper signal handling and reaping of
                 # zombie child processes.
                 init=True,
+                # Allow agent-server containers to resolve host.docker.internal
+                # and other custom hostnames for LAN deployments
+                extra_hosts=self.extra_hosts if self.extra_hosts else None,
             )
 
             sandbox_info = await self._container_to_sandbox_info(container)
@@ -422,8 +448,23 @@ class DockerSandboxService(SandboxService):
 class DockerSandboxServiceInjector(SandboxServiceInjector):
     """Dependency injector for docker sandbox services."""
 
-    container_url_pattern: str = 'http://localhost:{port}'
-    host_port: int = 3000
+    container_url_pattern: str = Field(
+        default='http://localhost:{port}',
+        description=(
+            'URL pattern for exposed sandbox ports. Use {port} as placeholder. '
+            'For remote access, set to your server IP (e.g., http://192.168.1.100:{port}). '
+            'Configure via OH_SANDBOX_CONTAINER_URL_PATTERN environment variable.'
+        ),
+    )
+    host_port: int = Field(
+        default=3000,
+        description=(
+            'The port on which the main OpenHands app server is running. '
+            'Used for webhook callbacks from agent-server containers. '
+            'If running OpenHands on a non-default port, set this to match. '
+            'Configure via OH_SANDBOX_HOST_PORT environment variable.'
+        ),
+    )
     container_name_prefix: str = 'oh-agent-server-'
     max_num_sandboxes: int = Field(
         default=5,
@@ -469,15 +510,36 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
             'determine whether the server is running'
         ),
     )
+    extra_hosts: dict[str, str] = Field(
+        default_factory=lambda: {'host.docker.internal': 'host-gateway'},
+        description=(
+            'Extra hostname mappings to add to agent-server containers. '
+            'This allows containers to resolve hostnames like host.docker.internal '
+            'for LAN deployments and MCP connections. '
+            'Format: {"hostname": "ip_or_gateway"}'
+        ),
+    )
+    startup_grace_seconds: int = Field(
+        default=STARTUP_GRACE_SECONDS,
+        description=(
+            'Number of seconds were no response from the agent server is acceptable'
+            'before it is considered an error'
+        ),
+    )
 
     async def inject(
         self, state: InjectorState, request: Request | None = None
     ) -> AsyncGenerator[SandboxService, None]:
         # Define inline to prevent circular lookup
         from openhands.app_server.config import (
+            get_global_config,
             get_httpx_client,
             get_sandbox_spec_service,
         )
+
+        # Get web_url from global config for CORS support
+        config = get_global_config()
+        web_url = config.web_url
 
         async with (
             get_httpx_client(state) as httpx_client,
@@ -493,4 +555,7 @@ class DockerSandboxServiceInjector(SandboxServiceInjector):
                 health_check_path=self.health_check_path,
                 httpx_client=httpx_client,
                 max_num_sandboxes=self.max_num_sandboxes,
+                web_url=web_url,
+                extra_hosts=self.extra_hosts,
+                startup_grace_seconds=self.startup_grace_seconds,
             )
